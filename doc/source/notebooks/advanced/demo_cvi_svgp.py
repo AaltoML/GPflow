@@ -6,6 +6,7 @@ import gpflow
 import tensorflow as tf
 import matplotlib.pyplot as plt
 from gpflow.ci_utils import ci_niter
+from gpflow.optimizers import NaturalGradient
 
 plt.style.use("ggplot")
 
@@ -26,6 +27,8 @@ def func(x):
 
 
 N = 500  # Number of training observations
+minibatch_size = N
+
 
 X = rng.rand(N, 1) * 2 - 1  # X values
 Y = func(X) + 0.2 * rng.randn(N, 1)  # Noisy Y values
@@ -47,59 +50,18 @@ _ = plt.plot(Xt, Yt, c="k")
 # %%
 M = 50  # Number of inducing locations
 
-kernel = gpflow.kernels.SquaredExponential(lengthscales=.1)
-# Z = X[:M, :].copy()  # Initialize inducing locations to the first M inputs in the dataset
 Z = np.linspace(X.min(), X.max(), M).reshape(-1, 1)
-likelihood = gpflow.likelihoods.Gaussian(variance=.2**2)
-m = gpflow.models.SVGP_CVI(kernel, likelihood, Z, num_data=N)
-# m = gpflow.models.SVGP(kernel, likelihood, Z, num_data=N)
 
-# %% [markdown]
-# ## Likelihood computation: batch vs. minibatch
-# First we showcase the model's performance using the whole dataset to compute the ELBO.
+m_cvi = gpflow.models.SVGP_CVI(
+    gpflow.kernels.SquaredExponential(lengthscales=.1),
+    gpflow.likelihoods.Gaussian(variance=.2**2), Z, num_data=N)
 
-# %%
-# elbo = tf.function(m.elbo)
-elbo = m.elbo
-# %%
-# TensorFlow re-traces & compiles a `tf.function`-wrapped method at *every* call if the arguments are numpy arrays instead of tf.Tensors. Hence:
-tensor_data = tuple(map(tf.convert_to_tensor, data))
-elbo(tensor_data)  # run it once to trace & compile
-
-# %%
-# %%timeit
-print(elbo(tensor_data))
+m_svgp = gpflow.models.SVGP(
+    gpflow.kernels.SquaredExponential(lengthscales=.1),
+    gpflow.likelihoods.Gaussian(variance=.2**2), Z, num_data=N)
 
 
-minibatch_size = 100
-train_dataset = tf.data.Dataset.from_tensor_slices((X, Y)).repeat().shuffle(N)
-train_iter = iter(train_dataset.batch(minibatch_size))
-ground_truth = elbo(tensor_data).numpy()
-
-# %%
-# %%timeit
-elbo(next(train_iter))
-
-# %% [markdown]
-# ### Stochastical estimation of ELBO
-# The minibatch estimate should be an unbiased estimator of the `ground_truth`. Here we show a histogram of the value from different evaluations, together with its mean and the ground truth. The small difference between the mean of the minibatch estimations and the ground truth shows that the minibatch estimator is working as expected.
-
-# %%
-evals = [elbo(minibatch).numpy() for minibatch in itertools.islice(train_iter, 100)]
-
-# %%
-plt.hist(evals, label="Minibatch estimations")
-plt.axvline(ground_truth, c="k", label="Ground truth")
-plt.axvline(np.mean(evals), c="g", ls="--", label="Minibatch mean")
-plt.legend()
-plt.title("Histogram of ELBO evaluations using minibatches")
-print("Discrepancy between ground truth and minibatch estimate:", ground_truth - np.mean(evals))
-
-# %% [markdown]
-# ### Minibatches speed up computation
-# The reason for using minibatches is that it decreases the time needed to make an optimization step, because estimating the objective is computationally cheaper with fewer data points. Here we plot the change in time required with the size of the minibatch. We see that smaller minibatches result in a cheaper estimate of the objective.
-
-def plot(title=""):
+def plot(m, title=""):
     plt.figure(figsize=(12, 4))
     plt.title(title)
     pX = np.linspace(-1, 1, 100)[:, None]  # Test locations
@@ -120,75 +82,150 @@ def plot(title=""):
     plt.legend(loc="lower right")
 
 
-plot(title="Predictions before training")
 
 # %% [markdown]
 # Now we can train our model. For optimizing the ELBO, we use the Adam Optimizer *(Kingma and Ba 2015)* which is designed for stochastic objective functions. We create a `run_adam` utility function  to perform the optimization.
 
 # %%
-minibatch_size = N
 
 # We turn off training for inducing point locations
-gpflow.set_trainable(m.inducing_variable, False)
-gpflow.set_trainable(m.likelihood, False)
-gpflow.set_trainable(m.kernel, False)
+for m in [m_cvi, m_svgp]:
+    gpflow.set_trainable(m.inducing_variable, False)
+    gpflow.set_trainable(m.likelihood, False)
+    gpflow.set_trainable(m.kernel, True)
+
+step = 1
+
+adam_lr = 0.01
+natgrad_lr = 1.
 
 
-def run_adam(model, iterations):
+def run_optim_cvi(model, iterations):
     """
     Utility function running the Adam optimizer
     
     :param model: GPflow model
     :param interations: number of iterations
     """
+    trainable_variables = model.kernel.trainable_variables + model.likelihood.trainable_variables
+
     # Create an Adam Optimizer action
     logf = []
-    train_iter = iter(train_dataset.batch(minibatch_size))
-    training_loss = model.training_loss_closure(train_iter, compile=True)
-    optimizer = tf.optimizers.Adam(lr=.01)
+    optimizer = tf.optimizers.Adam(lr=adam_lr)
+    training_loss = model.training_loss_closure(data)
 
     @tf.function
-    def optimization_step_old():
-        optimizer.minimize(training_loss, model.trainable_variables)
-
     def optimization_step():
-        X, Y = next(train_iter)
-        model.natgrad_step(X, Y, lr=0.1)
+        X, Y = data
+        # natural gradient step
+        model.natgrad_step(X, Y, lr=natgrad_lr)
+        # hyper parameter step
+        #optimizer.minimize(training_loss, var_list=trainable_variables)
 
-
-    for step in range(iterations):
+    for s in range(iterations):
         optimization_step()
-        if step % 10 == 0:
+        if s % step == 0:
             elbo = -training_loss().numpy()
             logf.append(elbo)
-            print(step, elbo)
+            print(s, elbo)
     return logf
 
 
-# %% [markdown]
-# Now we run the optimization loop for 20,000 iterations.
 
-# %%
-maxiter = ci_niter(200)
 
-# first run (no opt)
-plot("Predictions before training")
-plt.savefig('svgp_test_%d.svg' % 0)
-plt.close()
+def run_optim_svgp(model, iterations):
+    """
+    Utility function running the Adam optimizer
 
-for it in range(1, 20):
-    logf = run_adam(m, maxiter)
+    :param model: GPflow model
+    :param interations: number of iterations
+    """
+    trainable_variables = model.kernel.trainable_variables + model.likelihood.trainable_variables
+
+    # Create an Adam Optimizer action
+    logf = []
+    optimizer = tf.optimizers.Adam(lr=adam_lr)
+    training_loss = model.training_loss_closure(data)
+
+    natgrad_opt = NaturalGradient(gamma=natgrad_lr)
+    variational_params = [(model.q_mu, model.q_sqrt)]
+
+    @tf.function
+    def optimization_step():
+        # natural gradient step
+        natgrad_opt.minimize(training_loss, var_list=variational_params)
+        # hyper parameter step
+        #optimizer.minimize(training_loss, var_list=trainable_variables)
+
+    for s in range(iterations):
+        optimization_step()
+        if s % step == 0:
+            elbo = -training_loss().numpy()
+            logf.append(elbo)
+            print(s, elbo)
+    return logf
+
+
+maxiter = 200
+
+
+def run_optim_model(m, name):
+    # first run (no opt)
+    plt.figure()
+    plot(m, "Predictions before training")
+    plt.savefig('%s_test_%d.svg' % (name,0))
+    plt.close()
+
+    it = 1
+    if isinstance(m, gpflow.models.SVGP_CVI):
+        run_optim = run_optim_cvi
+    else:
+        run_optim = run_optim_svgp
+
+    logf = run_optim(m, maxiter)
 
     plt.figure()
-    plt.plot(np.arange(maxiter)[::10], logf)
+    plt.plot(np.arange(maxiter)[::step], logf)
     plt.xlabel("iteration")
     _ = plt.ylabel("ELBO")
+    plt.savefig('%s_elbo_test_%d.svg'%(name,it))
+    plt.close()
 
     # %% [markdown]
     # Finally, we plot the model's predictions.
 
     # %%
-    plot("Predictions after training")
-    plt.savefig('svgp_test_%d.svg'%it)
+    plt.figure()
+    plot(m, "Predictions after training")
+    plt.savefig('%s_test_%d.svg'%(name,it))
     plt.close()
+
+
+def run_optim_models(models, names):
+    # first run (no opt)
+
+    plt.figure()
+
+    for m,name in zip(models, names):
+        if isinstance(m, gpflow.models.SVGP_CVI):
+            run_optim = run_optim_cvi
+        else:
+            run_optim = run_optim_svgp
+
+        logf = run_optim(m, maxiter)
+
+        plt.plot(np.arange(maxiter), logf, label=name)
+
+    plt.xlabel("iteration")
+    _ = plt.ylabel("ELBO")
+    plt.legend()
+    plt.savefig('elbos_test.svg')
+    plt.close()
+
+
+
+
+# run_optim_model(m_svgp, 'svgp')
+# run_optim_model(m_cvi, 'cvi')
+run_optim_models([m_cvi, m_svgp], ['cvi', 'svgp'])
 
