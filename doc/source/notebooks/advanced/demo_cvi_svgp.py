@@ -26,7 +26,7 @@ def func(x):
     return np.sin(x * 3 * 3.14) + 0.3 * np.cos(x * 9 * 3.14) + 0.5 * np.sin(x * 7 * 3.14)
 
 
-N = 500  # Number of training observations
+N = 20  # Number of training observations
 minibatch_size = N
 
 
@@ -48,9 +48,9 @@ _ = plt.plot(Xt, Yt, c="k")
 # The main idea behind SVGP is to approximate the true GP posterior with a GP conditioned on a small set of "inducing" values. This smaller set can be thought of as summarizing the larger dataset. For this example, we will select a set of 50 inducing locations that are initialized from the training dataset:
 
 # %%
-M = 50  # Number of inducing locations
+M = N  # Number of inducing locations
 
-Z = np.linspace(X.min(), X.max(), M).reshape(-1, 1)
+Z = X # np.linspace(X.min(), X.max(), M).reshape(-1, 1)
 
 m_cvi = gpflow.models.SVGP_CVI(
     gpflow.kernels.SquaredExponential(lengthscales=.1),
@@ -58,7 +58,7 @@ m_cvi = gpflow.models.SVGP_CVI(
 
 m_svgp = gpflow.models.SVGP(
     gpflow.kernels.SquaredExponential(lengthscales=.1),
-    gpflow.likelihoods.Gaussian(variance=.2**2), Z, num_data=N)
+    gpflow.likelihoods.Gaussian(variance=.2**2), Z, num_data=N, whiten=False)
 
 
 def plot(m, title=""):
@@ -97,7 +97,7 @@ for m in [m_cvi, m_svgp]:
 step = 1
 
 adam_lr = 0.01
-natgrad_lr = 1.
+natgrad_lr = 0.5
 
 
 def run_optim_cvi(model, iterations):
@@ -110,14 +110,15 @@ def run_optim_cvi(model, iterations):
     trainable_variables = model.kernel.trainable_variables + model.likelihood.trainable_variables
 
     # Create an Adam Optimizer action
-    logf = []
     optimizer = tf.optimizers.Adam(lr=adam_lr)
     training_loss = model.training_loss_closure(data)
+    logf = []
 
-    @tf.function
+    #@tf.function
     def optimization_step():
         X, Y = data
         # natural gradient step
+
         model.natgrad_step(X, Y, lr=natgrad_lr)
         # hyper parameter step
         #optimizer.minimize(training_loss, var_list=trainable_variables)
@@ -143,15 +144,17 @@ def run_optim_svgp(model, iterations):
     trainable_variables = model.kernel.trainable_variables + model.likelihood.trainable_variables
 
     # Create an Adam Optimizer action
-    logf = []
     optimizer = tf.optimizers.Adam(lr=adam_lr)
     training_loss = model.training_loss_closure(data)
+    logf = []
 
     natgrad_opt = NaturalGradient(gamma=natgrad_lr)
     variational_params = [(model.q_mu, model.q_sqrt)]
 
     @tf.function
     def optimization_step():
+        X, Y = data
+
         # natural gradient step
         natgrad_opt.minimize(training_loss, var_list=variational_params)
         # hyper parameter step
@@ -166,7 +169,7 @@ def run_optim_svgp(model, iterations):
     return logf
 
 
-maxiter = 200
+maxiter = 10
 
 
 def run_optim_model(m, name):

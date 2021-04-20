@@ -233,7 +233,7 @@ class SVGP_CVI(SVGP):
 
         if lambda_2_sqrt is None:
             lambda_2_sqrt = [
-                tf.eye(num_inducing, dtype=default_float()) * 1e-3 for _ in range(self.num_latent_gps)
+                tf.eye(num_inducing, dtype=default_float()) * 1e-10 for _ in range(self.num_latent_gps)
             ]
             lambda_2_sqrt = np.array(lambda_2_sqrt)
             self.lambda_2_sqrt = Parameter(lambda_2_sqrt, transform=triangular())  # [P, M, M]
@@ -276,15 +276,15 @@ class SVGP_CVI(SVGP):
 
         grads = [
             tf.transpose(grads[0]) * P / 2.,
-            tf.reshape(grads[1], [1,1,-1]) * P[None, ...] * P[:, None, ...]
+            tf.reshape(grads[1], [1,1,-1]) * P[None, ...] * P[:, None, ...] * -1.
         ]
 
         # compute update in natural form
         lambda_1 = (1-lr) * lambda_1 + lr * tf.reduce_sum(grads[0], axis=-1, keepdims=True)
-        lambda_2 = -(1-lr) * lambda_2 + lr * tf.reduce_sum(grads[1], axis=-1)
+        lambda_2 = (1-lr) * lambda_2 + lr * tf.reduce_sum(grads[1], axis=-1)
 
         # transform and perform update
-        lambda_2_sqrt = -tf.linalg.cholesky(-lambda_2)
+        lambda_2_sqrt = tf.linalg.cholesky(lambda_2)
         self.lambda_1.assign(lambda_1)
         self.lambda_2_sqrt.assign(lambda_2_sqrt)
 
