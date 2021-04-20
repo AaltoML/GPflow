@@ -45,7 +45,7 @@ _ = plt.plot(Xt, Yt, c="k")
 # The main idea behind SVGP is to approximate the true GP posterior with a GP conditioned on a small set of "inducing" values. This smaller set can be thought of as summarizing the larger dataset. For this example, we will select a set of 50 inducing locations that are initialized from the training dataset:
 
 # %%
-M = 5  # Number of inducing locations
+M = 50  # Number of inducing locations
 
 kernel = gpflow.kernels.SquaredExponential(lengthscales=.1)
 # Z = X[:M, :].copy()  # Initialize inducing locations to the first M inputs in the dataset
@@ -145,7 +145,7 @@ def run_adam(model, iterations):
     logf = []
     train_iter = iter(train_dataset.batch(minibatch_size))
     training_loss = model.training_loss_closure(train_iter, compile=True)
-    optimizer = tf.optimizers.Adam(lr=.001)
+    optimizer = tf.optimizers.Adam(lr=.01)
 
     @tf.function
     def optimization_step_old():
@@ -153,7 +153,7 @@ def run_adam(model, iterations):
 
     def optimization_step():
         X, Y = next(train_iter)
-        model.natgrad_step(X, Y, lr=0.02)
+        model.natgrad_step(X, Y, lr=0.1)
 
 
     for step in range(iterations):
@@ -169,7 +169,7 @@ def run_adam(model, iterations):
 # Now we run the optimization loop for 20,000 iterations.
 
 # %%
-maxiter = ci_niter(500)
+maxiter = ci_niter(200)
 
 # first run (no opt)
 plot("Predictions before training")

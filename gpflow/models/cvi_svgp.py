@@ -215,33 +215,18 @@ class SVGP_CVI(SVGP):
 
     def _init_variational_parameters(self, num_inducing, lambda_1, lambda_2_sqrt):
         """
-        Constructs the mean and cholesky of the covariance of the variational Gaussian posterior.
-        If a user passes values for `q_mu` and `q_sqrt` the routine checks if they have consistent
-        and correct shapes. If a user does not specify any values for `q_mu` and `q_sqrt`, the routine
-        initializes them, their shape depends on `num_inducing` and `q_diag`.
-
-        Note: most often the comments refer to the number of observations (=output dimensions) with P,
-        number of latent GPs with L, and number of inducing points M. Typically P equals L,
-        but when certain multioutput kernels are used, this can change.
+        Constructs the site parameters λ₁, Λ₂.
+        for site t(u) = exp(uᵀλ₁ - ½ uᵀΛ₂u)
 
         Parameters
         ----------
         :param num_inducing: int
-            Number of inducing variables, typically refered to as M.
-        :param q_mu: np.array or None
-            Mean of the variational Gaussian posterior. If None the function will initialise
-            the mean with zeros. If not None, the shape of `q_mu` is checked.
-        :param q_sqrt: np.array or None
-            Cholesky of the covariance of the variational Gaussian posterior.
-            If None the function will initialise `q_sqrt` with identity matrix.
-            If not None, the shape of `q_sqrt` is checked, depending on `q_diag`.
-        :param q_diag: bool
-            Used to check if `q_mu` and `q_sqrt` have the correct shape or to
-            construct them with the correct shape. If `q_diag` is true,
-            `q_sqrt` is two dimensional and only holds the square root of the
-            covariance diagonal elements. If False, `q_sqrt` is three dimensional.
+            Number of inducing variables, typically referred to as M.
+        :param lambda_1: np.array or None
+            First order natural parameter of the variational site.
+        :param lambda_2_sqrt: np.array or None
+            Second order natural parameter of the variational site.
         """
-
 
         lambda_1 = np.zeros((num_inducing, self.num_latent_gps)) if lambda_1 is None else lambda_1
         self.lambda_1 = Parameter(lambda_1, dtype=default_float())  # [M, P]
@@ -257,64 +242,13 @@ class SVGP_CVI(SVGP):
             self.num_latent_gps = lambda_2_sqrt.shape[0]
             self.lambda_2_sqrt = Parameter(lambda_2_sqrt, transform=triangular())  # [L|P, M, M]
 
-    def get_mean_chol_cov_inducing_posterior_old(self):
-
-        # L1, sqrt(L2)
-        lambda_1 = self.lambda_1
-        lambda_2_sqrt = self.lambda_2_sqrt
-        # Kuu
-        K_uu = Kuu(self.inducing_variable, self.kernel, jitter=default_jitter())  # [P, M, M] or [M, M]
-        # chol(Kuu)
-        Luu = tf.linalg.cholesky(K_uu)
-        # chol(Kuu)^T chol(L2)
-        W = tf.matmul(Luu, lambda_2_sqrt, transpose_a=True)
-        # chol(L2)^T Kuu chol(L2) + I
-        A = tf.matmul(W, W, transpose_a=True) + tf.eye(self.num_inducing, dtype=default_float())
-        # chol(A)
-        cholA = tf.linalg.cholesky(A)
-        # V = Kuu chol(L2) chol(A)
-        # V = K_uu @ lambda_2_sqrt @ cholA
-        VT = tf.linalg.triangular_solve(cholA, tf.matmul(lambda_2_sqrt,  K_uu, transpose_a=True))
-
-        # Kuu - Kuu chol(L2) A chol(L2)^T Kuu
-        # Suu = K_uu - tf.matmul(V, V, transpose_b=True)
-        Suu = K_uu - tf.matmul(VT, VT, transpose_a=True)
-        chol_Suu = tf.linalg.cholesky(Suu)
-        # lambda2 * lambda1
-        l2l1 = tf.matmul(
-            lambda_2_sqrt,
-            tf.matmul(lambda_2_sqrt, lambda_1, transpose_a=True)
-        )
-        # mu = Suu * (lambda2 * lambda1)
-        mu = tf.matmul(Suu, l2l1)[0]
-        return mu, chol_Suu
-
     def get_mean_chol_cov_inducing_posterior(self):
-
-        # L1, sqrt(L2)
-        lambda_1 = self.lambda_1
-        lambda_2_sqrt = self.lambda_2_sqrt
-        # Kuu
+        """ Computes the mean and cholesky factor of the posterior on the inducing variables q(u) = 𝓝(u; m, S)
+        S = (K⁻¹ + Λ₂)⁻¹ = (K⁻¹ + L₂L₂ᵀ)⁻¹ = K - KL₂W⁻¹L₂ᵀK , W = (I + L₂ᵀKL₂)⁻¹
+        m = S λ₁
+        """
         K_uu = Kuu(self.inducing_variable, self.kernel, jitter=default_jitter())  # [P, M, M] or [M, M]
-        # chol(Kuu)
-        Luu = tf.linalg.cholesky(K_uu)
-
-        LpTLt = tf.matmul(Luu, lambda_2_sqrt, transpose_a=True)
-        W = tf.eye(self.num_inducing, dtype=default_float()) \
-            + tf.matmul(LpTLt, LpTLt, transpose_a=True)
-
-        # Lw = chol(W)
-        chol_W = tf.linalg.cholesky(W)
-        # W = Lw Lw^T
-        # W^-1 = Lw^{-T} Lw^{-1}
-        # K W^-1 K= [K Lw^{-T}] [Lw^{-1} K] = [Lw^{-1} K]^T [Lw^{-1} K]
-        LtTK = tf.matmul(lambda_2_sqrt, K_uu, transpose_a=True)
-        iLwLtTK = tf.linalg.triangular_solve(chol_W, LtTK, lower=True, adjoint=False)
-        S_q = K_uu - tf.matmul(iLwLtTK, iLwLtTK, transpose_a=True)
-        m_q = tf.matmul(S_q, lambda_1)[0]
-
-        chol_S_q = tf.linalg.cholesky(S_q + tf.eye(self.num_inducing, dtype=default_float()) *1e-2 )
-        return m_q, chol_S_q
+        return posterior_from_sites(K_uu, self.lambda_1, self.lambda_2_sqrt)
 
 
     @property
@@ -341,7 +275,7 @@ class SVGP_CVI(SVGP):
         P = tf.linalg.cholesky_solve(chol_Kuu, K_uf)
 
         grads = [
-            tf.transpose(grads[0]) * P,
+            tf.transpose(grads[0]) * P / 2.,
             tf.reshape(grads[1], [1,1,-1]) * P[None, ...] * P[:, None, ...]
         ]
 
@@ -353,6 +287,44 @@ class SVGP_CVI(SVGP):
         lambda_2_sqrt = -tf.linalg.cholesky(-lambda_2)
         self.lambda_1.assign(lambda_1)
         self.lambda_2_sqrt.assign(lambda_2_sqrt)
+
+
+def posterior_from_sites(K, lambda_1, lambda_2_sqrt):
+    """
+    Returns the mean and cholesky factor of the density q(u) = p(u)t(u) = 𝓝(u; m, S)
+    where p(u) = 𝓝(u; 0, K) and t(u) = exp(uᵀλ₁ - ½ uᵀΛ₂u)
+
+    S = (K⁻¹ + Λ₂)⁻¹ = (K⁻¹ + L₂L₂ᵀ)⁻¹ = K - KL₂W⁻¹L₂ᵀK , W = (I + L₂ᵀKL₂)⁻¹
+    m = S λ₁
+
+    Input:
+    :param: K : M x M
+    :param: lambda_1: M x P
+    :param: lambda_2: P x M x M
+
+    Output:
+    m: M x P
+    chol_S: P x M x M
+    """
+    m = K.shape[-1]
+    I = tf.eye(m, dtype=default_float())
+    L = tf.linalg.cholesky(K)
+
+    # W = I + L_p^T L_t L_t^T L_p, chol(W)
+    LpTLt = tf.matmul(L, lambda_2_sqrt, transpose_a=True)
+    W = I + tf.matmul(LpTLt, LpTLt, transpose_a=True)
+    chol_W = tf.linalg.cholesky(W)
+
+    # S_q = K - K W^-1 K = K - [Lw^{-1} K]^T [Lw^{-1} K]
+    LtTK = tf.matmul(lambda_2_sqrt, K, transpose_a=True)
+    iLwLtTK = tf.linalg.triangular_solve(chol_W, LtTK, lower=True, adjoint=False)
+    S_q = K - tf.matmul(iLwLtTK, iLwLtTK, transpose_a=True)
+
+    chol_S_q = tf.linalg.cholesky(S_q + I * 1e-8)
+    m_q = tf.einsum('lmn,nl->ml', S_q, lambda_1)
+
+    return m_q, chol_S_q
+
 
 def gradient_transformation_mean_var_to_expectation(inputs, grads):
     """
