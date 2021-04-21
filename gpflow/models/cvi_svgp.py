@@ -345,5 +345,8 @@ def gradient_transformation_mean_var_to_expectation(inputs, grads):
     into its gradients wrt to [μ, σ² + μ²]
     :param inputs: [μ, σ²]
     :param grads: 𝐠
+
+    Output:
+    ▽μ
     """
     return grads[0] - 2.0 * grads[1] * inputs[0], grads[1]

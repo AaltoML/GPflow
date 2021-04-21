@@ -21,6 +21,16 @@ tf.random.set_seed(42)
 # f(x) = \sin(3\pi x) + 0.3\cos(9\pi x) + \frac{\sin(7 \pi x)}{2}
 # \end{equation}
 
+
+# Printing step
+step = 1
+
+# Parameters for optimisation
+adam_lr = 0.01
+natgrad_lr = 0.5
+maxiter = 10
+
+
 # %%
 def func(x):
     return np.sin(x * 3 * 3.14) + 0.3 * np.cos(x * 9 * 3.14) + 0.5 * np.sin(x * 7 * 3.14)
@@ -49,7 +59,6 @@ _ = plt.plot(Xt, Yt, c="k")
 
 # %%
 M = N  # Number of inducing locations
-
 Z = X # np.linspace(X.min(), X.max(), M).reshape(-1, 1)
 
 m_cvi = gpflow.models.SVGP_CVI(
@@ -93,11 +102,6 @@ for m in [m_cvi, m_svgp]:
     gpflow.set_trainable(m.inducing_variable, False)
     gpflow.set_trainable(m.likelihood, False)
     gpflow.set_trainable(m.kernel, True)
-
-step = 1
-
-adam_lr = 0.01
-natgrad_lr = 0.5
 
 
 def run_optim_cvi(model, iterations):
@@ -169,14 +173,12 @@ def run_optim_svgp(model, iterations):
     return logf
 
 
-maxiter = 10
-
 
 def run_optim_model(m, name):
     # first run (no opt)
     plt.figure()
     plot(m, "Predictions before training")
-    plt.savefig('%s_test_%d.svg' % (name,0))
+    plt.savefig('plots/%s_test_%d.svg' % (name,0))
     plt.close()
 
     it = 1
@@ -191,7 +193,7 @@ def run_optim_model(m, name):
     plt.plot(np.arange(maxiter)[::step], logf)
     plt.xlabel("iteration")
     _ = plt.ylabel("ELBO")
-    plt.savefig('%s_elbo_test_%d.svg'%(name,it))
+    plt.savefig('plots/%s_elbo_test_%d.svg'%(name,it))
     plt.close()
 
     # %% [markdown]
@@ -200,7 +202,7 @@ def run_optim_model(m, name):
     # %%
     plt.figure()
     plot(m, "Predictions after training")
-    plt.savefig('%s_test_%d.svg'%(name,it))
+    plt.savefig('plots/%s_test_%d.svg'%(name,it))
     plt.close()
 
 
@@ -222,7 +224,7 @@ def run_optim_models(models, names):
     plt.xlabel("iteration")
     _ = plt.ylabel("ELBO")
     plt.legend()
-    plt.savefig('elbos_test.svg')
+    plt.savefig('plots/elbos_test.svg')
     plt.close()
 
 
