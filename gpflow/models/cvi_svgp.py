@@ -278,14 +278,17 @@ class SVGP_CVI(SVGP):
         # chain rule at f
         grads = gradient_transformation_mean_var_to_expectation([mean, var], grads)
 
+        # Compute the projection matrix A from prior information
         K_uu = Kuu(self.inducing_variable, self.kernel, jitter=default_jitter())  # [P, M, M] or [M, M]
         K_uf = Kuf(self.inducing_variable, self.kernel, X)  # [P, M, M] or [M, M]
         chol_Kuu = tf.linalg.cholesky(K_uu)
-        P = tf.linalg.cholesky_solve(chol_Kuu, K_uf)
+        A = tf.linalg.cholesky_solve(chol_Kuu, K_uf)
 
+        # TODO: Discuss this tensorflow magic
+        # 
         grads = [
-            tf.transpose(grads[0]) * P / 2.,
-            tf.reshape(grads[1], [1,1,-1]) * P[None, ...] * P[:, None, ...] * -1.
+            tf.transpose(grads[0]) * A / 2.,
+            tf.reshape(grads[1], [1,1,-1]) * A[None, ...] * A[:, None, ...] * -1.
         ]
 
         # compute update in natural form
