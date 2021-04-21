@@ -228,8 +228,6 @@ def run_optim_models(models, names):
     plt.close()
 
 
-
-
 # run_optim_model(m_svgp, 'svgp')
 # run_optim_model(m_cvi, 'cvi')
 run_optim_models([m_cvi, m_svgp], ['cvi', 'svgp'])
