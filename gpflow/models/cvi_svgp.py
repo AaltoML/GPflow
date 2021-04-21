@@ -256,7 +256,7 @@ class SVGP_CVI(SVGP):
         return tf.matmul(self.lambda_2_sqrt, self.lambda_2_sqrt, transpose_b=True)
 
     def natgrad_step(self, X, Y, lr=0.1):
-        """ Takes natural gradient step in Variational parameters in the local site parameters
+        """ Takes natural gradient step in Variational parameters in the local parameters
         λₜ = rₜ▽[Var_exp] + (1-rₜ)λₜ₋₁
         Input:
         :param: X : N x D
@@ -285,7 +285,8 @@ class SVGP_CVI(SVGP):
         A = tf.linalg.cholesky_solve(chol_Kuu, K_uf)
 
         # TODO: Discuss this tensorflow magic
-        # 
+        # ▽μ₁[Var_exp] = aₙαₙ
+        # ▽μ2[Var_exp] = λₙaₙaₙᵀ
         grads = [
             tf.transpose(grads[0]) * A / 2.,
             tf.reshape(grads[1], [1,1,-1]) * A[None, ...] * A[:, None, ...] * -1.
