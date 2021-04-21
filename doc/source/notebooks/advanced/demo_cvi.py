@@ -4,6 +4,7 @@ import gpflow
 import tensorflow as tf
 import matplotlib.pyplot as plt
 from gpflow.models.cvi import CVI
+from gpflow.optimizers import NaturalGradient
 
 plt.style.use("ggplot")
 
@@ -28,20 +29,29 @@ _ = plt.plot(Xt, Yt, c="k")
 #plt.show()
 
 
+var_gp = .1
+len_gp = .1
+
+lr_natgrad = 1.
+
 m_cvi = CVI(data,
-    gpflow.kernels.SquaredExponential(lengthscales=.1),
-    gpflow.likelihoods.Gaussian(variance=.2**2))
+    gpflow.kernels.SquaredExponential(lengthscales=len_gp),
+    gpflow.likelihoods.Gaussian(variance=var_gp))
 
 m_vgp = gpflow.models.VGP(data,
-    gpflow.kernels.SquaredExponential(lengthscales=.1),
-    gpflow.likelihoods.Gaussian(variance=.2**2))
-
-K = gpflow.kernels.SquaredExponential(lengthscales=.1)
+    gpflow.kernels.SquaredExponential(lengthscales=len_gp),
+    gpflow.likelihoods.Gaussian(variance=var_gp))
 
 
-L = tf.linalg.cholesky(K(X))
+for k in range(10):
+    m_cvi.update_variational_parameters(beta=lr_natgrad)
+    print('cvi :',  m_cvi.elbo())
 
-print(m_cvi.maximum_log_likelihood_objective(beta=0))
 
-print(m_vgp.elbo())
+natgrad_opt = NaturalGradient(gamma=lr_natgrad)
+variational_params = [(m_vgp.q_mu, m_vgp.q_sqrt)]
+
+for k in range(10):
+    natgrad_opt.minimize(m_vgp.training_loss, var_list=variational_params)
+    print('svgp :', m_vgp.elbo())
 

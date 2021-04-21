@@ -63,10 +63,13 @@ class CVI(GPModel):
 
         # self.lambda_1 = 1e-3*np.ones((num_data, self.num_latent))
         # self.lambda_2 = 1e-3*np.ones((num_data, self.num_latent))
-        self.lambda_1 = 1e-6*np.ones((num_data, self.num_latent))
+        self.lambda_1 = np.zeros((num_data, self.num_latent))
         self.lambda_2 = 1e-6*np.ones((num_data, self.num_latent))
 
-    def maximum_log_likelihood_objective(self, beta=0.05) -> tf.Tensor:
+    def maximum_log_likelihood_objective(self, *args, **kwargs) -> tf.Tensor:
+        return self.elbo()
+
+    def elbo(self) -> tf.Tensor:
         r"""
         This method computes the variational lower bound on the likelihood,
         which is:
@@ -92,37 +95,59 @@ class CVI(GPModel):
         post_m = K @ alpha
         
         # Keep alphas updated
-        self.q_alpha = alpha 
+        self.q_alpha = alpha
+
+        # Get variational expectations.
+        var_exp = self.likelihood.variational_expectations(post_m, post_v, y_data)
+
+        # Compute the ELBO
+        elbo = -tf.transpose(pseudo_y) @ alpha/2. - tf.reduce_sum(tf.math.log(tf.linalg.diag_part(L))) + \
+            tf.reduce_sum(0.5*(self.lambda_2)*((pseudo_y - post_m)**2 + post_v)) + tf.reduce_sum(var_exp)
+
+        return tf.reduce_sum(elbo)
+
+    def update_variational_parameters(self, beta=0.05) -> tf.Tensor:
+        r"""
+        This method computes the variational lower bound on the likelihood,
+        which is:
+
+            E_{q(F)} [ \log p(Y|F) ] - KL[ q(F) || p(F)]
+
+        with
+
+            q(\mathbf f) = N(\mathbf f \,|\, \boldsymbol \mu, \boldsymbol \Sigma)
+
+        """
+
+        x_data, y_data = self.data
+        pseudo_y = self.lambda_1 / self.lambda_2
+        sW = tf.sqrt(tf.abs(self.lambda_2))
+
+        # Get conditionals
+        K = self.kernel(x_data) + tf.eye(self.num_data, dtype=default_float()) * default_jitter()
+        L = tf.linalg.cholesky(tf.eye(self.num_data, dtype=tf.float64) + (sW @ tf.transpose(sW)) * K)
+        T = tf.linalg.solve(L, tf.tile(sW, (1, self.num_data)) * K)
+        post_v = tf.reshape(tf.linalg.diag_part(K) - tf.reduce_sum(T * T, axis=0), (self.num_data, 1))
+        alpha = sW * tf.linalg.solve(tf.transpose(L), tf.linalg.solve(L, sW * pseudo_y))
+        post_m = K @ alpha
+
+        # Keep alphas updated
+        self.q_alpha = alpha
 
         # Get variational expectations.
         with tf.GradientTape(persistent=True) as g:
             g.watch(post_m)
             g.watch(post_v)
             var_exp = self.likelihood.variational_expectations(post_m, post_v, y_data)
-        
+
         d_exp_dm = g.gradient(var_exp, post_m)
         d_exp_dv = g.gradient(var_exp, post_v)
-        del g 
+        del g
 
         # Take the CVI step
-        self.lambda_1 = (1.-beta)*self.lambda_1 + beta*(d_exp_dm -2.*(d_exp_dv*post_m))
-        self.lambda_2 = (1.-beta)*self.lambda_2 + beta*(-2.*d_exp_dv)
-        
-        # Compute the ELBO
-        elbo = -tf.transpose(pseudo_y) @ alpha/2. - tf.reduce_sum(tf.math.log(tf.linalg.diag_part(L))) + \
-            tf.reduce_sum(0.5*(self.lambda_2)*((pseudo_y - post_m)**2 + post_v)) + tf.reduce_sum(var_exp)
+        self.lambda_1 = (1. - beta) * self.lambda_1 + beta * (d_exp_dm - 2. * (d_exp_dv * post_m))
+        self.lambda_2 = (1. - beta) * self.lambda_2 + beta * (-2. * d_exp_dv)
 
-        # print(-tf.transpose(pseudo_y) @ alpha/2. - tf.reduce_sum(tf.math.log(tf.linalg.diag_part(L))) + \
-        #     tf.reduce_sum(0.5*(self.lambda_2)*((pseudo_y - post_m)**2 + post_v)))
-        KL = tf.reduce_sum(-tf.transpose(pseudo_y) @ alpha/2. - tf.reduce_sum(tf.math.log(tf.linalg.diag_part(L))) + \
-            tf.reduce_sum(0.5*(self.lambda_2)*((pseudo_y - post_m)**2 + post_v)))
-        #print(KL)
-
-        #print( tf.reduce_sum(var_exp))
-
-        return tf.reduce_sum(elbo)
-
-    
     def predict_f(self, Xnew: InputData, full_cov: bool = False, full_output_cov: bool = False) -> MeanAndVariance:
         r"""
         The posterior variance of F is given by
