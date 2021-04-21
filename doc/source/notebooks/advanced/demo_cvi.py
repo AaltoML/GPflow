@@ -36,6 +36,12 @@ m_vgp = gpflow.models.VGP(data,
     gpflow.kernels.SquaredExponential(lengthscales=.1),
     gpflow.likelihoods.Gaussian(variance=.2**2))
 
+K = gpflow.kernels.SquaredExponential(lengthscales=.1)
+
+
+L = tf.linalg.cholesky(K(X))
+
 print(m_cvi.maximum_log_likelihood_objective(beta=0))
 
 print(m_vgp.elbo())
+

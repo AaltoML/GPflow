@@ -108,7 +108,7 @@ class VGP(GPModel, InternalDataTrainingLossMixin):
 
         # Get variational expectations.
         var_exp = self.likelihood.variational_expectations(fmean, fvar, Y_data)
-
+        #print(KL)
         return tf.reduce_sum(var_exp) - KL
 
     def predict_f(

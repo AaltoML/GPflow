@@ -61,8 +61,10 @@ class CVI(GPModel):
         self.num_latent = num_latent or y_data.shape[1]
         self.data = data
 
-        self.lambda_1 = 1e-3*np.ones((num_data, self.num_latent))
-        self.lambda_2 = 1e-3*np.ones((num_data, self.num_latent))
+        # self.lambda_1 = 1e-3*np.ones((num_data, self.num_latent))
+        # self.lambda_2 = 1e-3*np.ones((num_data, self.num_latent))
+        self.lambda_1 = 1e-6*np.ones((num_data, self.num_latent))
+        self.lambda_2 = 1e-6*np.ones((num_data, self.num_latent))
 
     def maximum_log_likelihood_objective(self, beta=0.05) -> tf.Tensor:
         r"""
@@ -109,6 +111,14 @@ class CVI(GPModel):
         # Compute the ELBO
         elbo = -tf.transpose(pseudo_y) @ alpha/2. - tf.reduce_sum(tf.math.log(tf.linalg.diag_part(L))) + \
             tf.reduce_sum(0.5*(self.lambda_2)*((pseudo_y - post_m)**2 + post_v)) + tf.reduce_sum(var_exp)
+
+        # print(-tf.transpose(pseudo_y) @ alpha/2. - tf.reduce_sum(tf.math.log(tf.linalg.diag_part(L))) + \
+        #     tf.reduce_sum(0.5*(self.lambda_2)*((pseudo_y - post_m)**2 + post_v)))
+        KL = tf.reduce_sum(-tf.transpose(pseudo_y) @ alpha/2. - tf.reduce_sum(tf.math.log(tf.linalg.diag_part(L))) + \
+            tf.reduce_sum(0.5*(self.lambda_2)*((pseudo_y - post_m)**2 + post_v)))
+        #print(KL)
+
+        #print( tf.reduce_sum(var_exp))
 
         return tf.reduce_sum(elbo)
 
