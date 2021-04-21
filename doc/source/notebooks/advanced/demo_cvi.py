@@ -29,29 +29,70 @@ _ = plt.plot(Xt, Yt, c="k")
 #plt.show()
 
 
-var_gp = .1
+var_gp = .5
 len_gp = .1
-
+var_noise = .1
 lr_natgrad = 1.
 
+
+m_gpr = gpflow.models.GPR(data,
+    gpflow.kernels.SquaredExponential(lengthscales=len_gp, variance=var_gp),
+    noise_variance=var_noise
+)
+
 m_cvi = CVI(data,
-    gpflow.kernels.SquaredExponential(lengthscales=len_gp),
-    gpflow.likelihoods.Gaussian(variance=var_gp))
+    gpflow.kernels.SquaredExponential(lengthscales=len_gp, variance=var_gp),
+    gpflow.likelihoods.Gaussian(variance=var_noise))
 
 m_vgp = gpflow.models.VGP(data,
-    gpflow.kernels.SquaredExponential(lengthscales=len_gp),
-    gpflow.likelihoods.Gaussian(variance=var_gp))
+    gpflow.kernels.SquaredExponential(lengthscales=len_gp, variance=var_gp),
+    gpflow.likelihoods.Gaussian(variance=var_noise))
 
+print('pre-optim cvi :', m_cvi.elbo())
+print('pre-optim svgp :', m_vgp.elbo())
 
-for k in range(10):
-    m_cvi.update_variational_parameters(beta=lr_natgrad)
-    print('cvi :',  m_cvi.elbo())
+m_cvi.update_variational_parameters(beta=lr_natgrad)
+print('cvi :',  m_cvi.elbo())
 
 
 natgrad_opt = NaturalGradient(gamma=lr_natgrad)
 variational_params = [(m_vgp.q_mu, m_vgp.q_sqrt)]
 
-for k in range(10):
-    natgrad_opt.minimize(m_vgp.training_loss, var_list=variational_params)
-    print('svgp :', m_vgp.elbo())
+natgrad_opt.minimize(m_vgp.training_loss, var_list=variational_params)
+print('svgp :', m_vgp.elbo())
+
+print('gpr :', m_gpr.log_marginal_likelihood())
+
+
+N_grid = 50
+llh_gpr = np.zeros((N_grid,))
+llh_vgp = np.zeros((N_grid,))
+llh_cvi = np.zeros((N_grid,))
+vars_gp = np.linspace(.1, 2., N_grid)
+
+for i, v in enumerate(vars_gp):
+
+    m_gpr.kernel.variance.assign(tf.constant(v))
+    llh_gpr[i] = m_gpr.log_marginal_likelihood().numpy()
+    m_cvi.kernel.variance.assign(tf.constant(v))
+    llh_cvi[i] = m_cvi.elbo().numpy()
+    m_vgp.kernel.variance.assign(tf.constant(v))
+    llh_vgp[i] = m_vgp.elbo().numpy()
+
+
+print(llh_vgp)
+print(llh_gpr)
+print(llh_cvi)
+plt.figure()
+
+plt.plot(vars_gp, llh_cvi, label='cvi')
+plt.plot(vars_gp, llh_vgp, label='vgp')
+plt.plot(vars_gp, llh_gpr, ls='--', label='gpr')
+plt.vlines(var_gp, ymin=llh_gpr.min(), ymax=llh_gpr.max())
+plt.ylim([llh_gpr.min(), llh_gpr.max()+.1 *(llh_gpr.max()-llh_gpr.min())])
+plt.legend()
+plt.savefig('llh_gpr.png')
+plt.close()
+
+
 
