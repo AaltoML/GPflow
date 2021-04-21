@@ -256,7 +256,16 @@ class SVGP_CVI(SVGP):
         return tf.matmul(self.lambda_2_sqrt, self.lambda_2_sqrt, transpose_b=True)
 
     def natgrad_step(self, X, Y, lr=0.1):
+        """ Takes natural gradient step in Variational parameters in the local site parameters
+        λₜ = rₜ▽[Var_exp] + (1-rₜ)λₜ₋₁
+        Input:
+        :param: X : N x D
+        :param: Y:  N x 1
+        :param: lr: Scalar
 
+        Output:
+        Updates the params
+        """
         mean, var = self.predict_f(X)
         with tf.GradientTape() as g:
             g.watch([mean, var])
