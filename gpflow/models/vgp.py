@@ -253,3 +253,138 @@ class VGPOpperArchambeau(GPModel, InternalDataTrainingLossMixin):
         else:
             f_var = self.kernel(Xnew, full_cov=False) - tf.reduce_sum(tf.square(LiKx), axis=1)
         return f_mean, tf.transpose(f_var)
+
+
+class VGP_CVI(GPModel, InternalDataTrainingLossMixin):
+
+    def __init__(
+        self,
+        data: RegressionData,
+        kernel: Kernel,
+        likelihood: Likelihood,
+        mean_function: Optional[MeanFunction] = None,
+        num_latent_gps: Optional[int] = None,
+    ):
+        """
+        data = (X, Y) contains the input points [N, D] and the observations [N, P]
+        kernel, likelihood, mean_function are appropriate GPflow objects
+        """
+        if num_latent_gps is None:
+            num_latent_gps = self.calc_num_latent_gps_from_data(data, kernel, likelihood)
+        super().__init__(kernel, likelihood, mean_function, num_latent_gps)
+
+        self.data = data_input_to_tensor(data)
+        X_data, Y_data = self.data
+        self.num_data = X_data.shape[0]
+        self.q_lambda_1 = Parameter(np.zeros((self.num_data, self.num_latent_gps)))
+        self.q_lambda_2 = Parameter(
+            np.ones((self.num_data, self.num_latent_gps)), transform=gpflow.utilities.positive()
+        )
+
+    def maximum_log_likelihood_objective(self) -> tf.Tensor:
+        return self.elbo()
+
+    def mean_chol_cov(self):
+        X_data, Y_data = self.data
+        K = self.kernel(X_data)
+
+        # compute the variance for each of the outputs
+        I = tf.tile(
+            tf.eye(self.num_data, dtype=default_float())[None, ...], [self.num_latent_gps, 1, 1]
+        )
+        A = (
+            I
+            + tf.transpose(self.q_lambda_2)[:, None, ...]
+            * tf.transpose(self.q_lambda_2)[:, :, None, ...]
+            * K
+        )
+        L = tf.linalg.cholesky(A)
+
+        # nat_post_2 = K^{-1} + lambda_2^2
+        # cov_post_2 = nat_post_2^-1 = lambda_2^-2 - lambda_2^-1 A^-1 lambda_2^-1
+        # A = I + lambda_2 K lambda_2
+
+        # mean_post = nat_post_2^{-1}nat_post_1
+        # = cov_post nat_post_1
+        # = (lambda_2^-2 - lambda_2^-1 A^-1 lambda_2^-1) nat_post_1
+        # = (lambda_2^-2 nat_post_1 - lambda_2^-1 [A^-1 lambda_2^-1 nat_post_1]
+
+        K_alpha = self.q_lambda_1 / self.q_lambda_2**2 \
+                  - tf.linalg.cholesky_solve(L, self.q_lambda_1 / self.q_lambda_2) / self.q_lambda_2
+        f_mean = K_alpha + self.mean_function(X_data)
+
+        Li = tf.linalg.triangular_solve(L, I)
+        tmp = Li / tf.transpose(self.q_lambda_2)[:, None, ...]
+
+        f_cov = tf.linalg.diag(1.0 / tf.square(self.q_lambda_2)) - tf.matmul(tmp, tmp, transpose_a=True)
+
+        return f_mean, tf.linalg.cholesky(f_cov)
+
+    def elbo(self) -> tf.Tensor:
+        r"""
+        q_alpha, q_lambda are variational parameters, size [N, R]
+        This method computes the variational lower bound on the likelihood,
+        which is:
+            E_{q(F)} [ \log p(Y|F) ] - KL[ q(F) || p(F)]
+        with
+            q(f) = N(f | K alpha + mean, [K^-1 + diag(square(lambda))]^-1) .
+        """
+        X_data, Y_data = self.data
+
+        K = self.kernel(X_data)
+
+        # compute the variance for each of the outputs
+        I = tf.tile(
+            tf.eye(self.num_data, dtype=default_float())[None, ...], [self.num_latent_gps, 1, 1]
+        )
+        A = (
+            I
+            + tf.transpose(self.q_lambda_2)[:, None, ...]
+            * tf.transpose(self.q_lambda_2)[:, :, None, ...]
+            * K
+        )
+        L = tf.linalg.cholesky(A)
+
+        # nat_post_2 = K^{-1} + lambda_2^2
+        # cov_post_2 = nat_post_2^-1 = lambda_2^-2 - lambda_2^-1 A^-1 lambda_2^-1
+        # A = I + lambda_2 K lambda_2
+
+        # mean_post = nat_post_2^{-1}nat_post_1
+        # = cov_post nat_post_1
+        # = (lambda_2^-2 - lambda_2^-1 A^-1 lambda_2^-1) nat_post_1
+        # = (lambda_2^-2 nat_post_1 - lambda_2^-1 [A^-1 lambda_2^-1 nat_post_1]
+
+        K_alpha = self.q_lambda_1 / self.q_lambda_2**2 \
+                  - tf.linalg.cholesky_solve(L, self.q_lambda_1 / self.q_lambda_2) / self.q_lambda_2
+        f_mean = K_alpha + self.mean_function(X_data)
+
+
+        Li = tf.linalg.triangular_solve(L, I)
+        tmp = Li / tf.transpose(self.q_lambda_2)[:, None, ...]
+        f_var = 1.0 / tf.square(self.q_lambda_2) - tf.transpose(tf.reduce_sum(tf.square(tmp), 1))
+
+        # some statistics about A are used in the KL
+        A_logdet = 2.0 * tf.reduce_sum(tf.math.log(tf.linalg.diag_part(L)))
+        trAi = tf.reduce_sum(tf.square(Li))
+
+        KL = 0.5 * (
+            A_logdet
+            + trAi
+            - self.num_data * self.num_latent_gps
+            + tf.reduce_sum(K_alpha * self.q_alpha)
+        )
+
+        v_exp = self.likelihood.variational_expectations(f_mean, f_var, Y_data)
+        return tf.reduce_sum(v_exp) - KL
+
+    def predict_f(
+        self, Xnew: InputData, full_cov: bool = False, full_output_cov: bool = False
+    ) -> MeanAndVariance:
+        X_data, _ = self.data
+
+        q_mu, q_sqrt = self.mean_chol_cov()
+
+        mu, var = conditional(
+            Xnew, X_data, self.kernel, q_mu, q_sqrt=q_sqrt, full_cov=full_cov, white=True,
+        )
+        return mu + self.mean_function(Xnew), var
