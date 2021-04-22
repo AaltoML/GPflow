@@ -32,7 +32,7 @@ data = (X, Y)
 var_gp = 1.5
 len_gp = .1
 var_noise = .1
-lr_natgrad = 1.
+lr_natgrad = .1
 
 
 m_gpr = gpflow.models.GPR(data,
@@ -56,12 +56,24 @@ set_trainable(m_cvi.kernel.lengthscales, False)
 set_trainable(m_cvi.kernel.variance, False)
 set_trainable(m_cvi.likelihood.variance, False)
 
-set_trainable(m_vgp.kernel.lengthscales, False)
-set_trainable(m_vgp.kernel.variance, False)
-set_trainable(m_vgp.likelihood.variance, False)
-
-
 m_cvi.update_variational_parameters(beta=1)
 
 # Testing both CVI lr=1 gives GPR likelihood
 assert my_tf_round(m_cvi.elbo()) == my_tf_round(m_gpr.maximum_log_likelihood_objective()), "GPR and CVI do not match"
+
+#Checking ELBO evaluations Natgrad and CVI
+
+m_cvi = CVI(data,
+    gpflow.kernels.SquaredExponential(lengthscales=len_gp, variance=var_gp),
+    gpflow.likelihoods.Gaussian(variance=var_noise))
+
+m_cvi.update_variational_parameters(beta=lr_natgrad)
+
+
+natgrad_opt = NaturalGradient(gamma=lr_natgrad)
+variational_params = [(m_vgp.q_mu, m_vgp.q_sqrt)]
+natgrad_opt.minimize(m_vgp.training_loss, var_list=variational_params)
+
+
+# Testing one step in natgrad is same as CVI
+assert my_tf_round(m_cvi.elbo()) == my_tf_round(m_vgp.elbo()), "GPR and CVI after one step do not match"
