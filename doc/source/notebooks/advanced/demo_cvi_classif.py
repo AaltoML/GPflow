@@ -17,7 +17,7 @@ tf.random.set_seed(42)
 def func(x):
     return np.sin(x * 3 * 3.14) + 0.3 * np.cos(x * 9 * 3.14) + 0.5 * np.sin(x * 7 * 3.14)
 
-N = 1000  # Number of training observations
+N = 100  # Number of training observations
 X = rng.rand(N, 1) * 2 - 1  # X values
 F = func(X) + 0.2 * rng.randn(N, 1)  # Noisy Y values
 Y = (F>0).astype(float)
