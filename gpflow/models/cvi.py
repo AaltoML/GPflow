@@ -61,8 +61,6 @@ class CVI(GPModel):
         self.num_latent = num_latent or y_data.shape[1]
         self.data = data
 
-        # self.lambda_1 = 1e-3*np.ones((num_data, self.num_latent))
-        # self.lambda_2 = 1e-3*np.ones((num_data, self.num_latent))
         self.lambda_1 = np.zeros((num_data, self.num_latent))
         self.lambda_2 = 1e-6*np.ones((num_data, self.num_latent))
 
@@ -70,23 +68,16 @@ class CVI(GPModel):
         return self.elbo()
 
     def elbo(self) -> tf.Tensor:
-        r"""
-        This method computes the variational lower bound on the likelihood,
-        which is:
-
-            E_{q(F)} [ \log p(Y|F) ] - KL[ q(F) || p(F)]
-
-        with
-
-            q(\mathbf f) = N(\mathbf f \,|\, \boldsymbol \mu, \boldsymbol \Sigma)
-
+        """
+        This gives a variational bound (the evidence lower bound or ELBO) on
+        the log marginal likelihood of the model.
         """
 
         x_data, y_data = self.data
         pseudo_y = self.lambda_1 / self.lambda_2
         sW = tf.sqrt(tf.abs(self.lambda_2))
 
-        # Get conditionals
+        # Computes conversion λ₁, λ₂ → m, V by using q(f) ≃ t(f)p(f)
         K = self.kernel(x_data) + tf.eye(self.num_data, dtype=default_float()) * default_jitter()
         L = tf.linalg.cholesky(tf.eye(self.num_data,dtype=tf.float64) + (sW @ tf.transpose(sW)) * K)
         T = tf.linalg.solve(L,tf.tile(sW,(1,self.num_data)) * K)
@@ -94,36 +85,35 @@ class CVI(GPModel):
         alpha = sW*tf.linalg.solve(tf.transpose(L),tf.linalg.solve(L,sW*pseudo_y))
         post_m = K @ alpha
         
-        # Keep alphas updated
+        # Store alpha for prediction
         self.q_alpha = alpha
 
         # Get variational expectations.
         var_exp = self.likelihood.variational_expectations(post_m, post_v, y_data)
 
-        # Compute the ELBO
+        # Compute the ELBO where KL is first 3 terms.
         elbo = -tf.transpose(pseudo_y) @ alpha/2. - tf.reduce_sum(tf.math.log(tf.linalg.diag_part(L))) + \
             tf.reduce_sum(0.5*(self.lambda_2)*((pseudo_y - post_m)**2 + post_v)) + tf.reduce_sum(var_exp)
 
         return tf.reduce_sum(elbo)
 
     def update_variational_parameters(self, beta=0.05) -> tf.Tensor:
-        r"""
-        This method computes the variational lower bound on the likelihood,
-        which is:
+        """ Takes natural gradient step in Variational parameters in the local parameters
+        λₜ = rₜ▽[Var_exp] + (1-rₜ)λₜ₋₁
+        Input:
+        :param: X : N x D
+        :param: Y:  N x 1
+        :param: lr: Scalar
 
-            E_{q(F)} [ \log p(Y|F) ] - KL[ q(F) || p(F)]
-
-        with
-
-            q(\mathbf f) = N(\mathbf f \,|\, \boldsymbol \mu, \boldsymbol \Sigma)
-
+        Output:
+        Updates the params
         """
 
         x_data, y_data = self.data
         pseudo_y = self.lambda_1 / self.lambda_2
         sW = tf.sqrt(tf.abs(self.lambda_2))
 
-        # Get conditionals
+        # Computes conversion λ₁, λ₂ → m, V by using q(f) ≃ t(f)p(f)
         K = self.kernel(x_data) + tf.eye(self.num_data, dtype=default_float()) * default_jitter()
         L = tf.linalg.cholesky(tf.eye(self.num_data, dtype=tf.float64) + (sW @ tf.transpose(sW)) * K)
         T = tf.linalg.solve(L, tf.tile(sW, (1, self.num_data)) * K)
@@ -134,7 +124,7 @@ class CVI(GPModel):
         # Keep alphas updated
         self.q_alpha = alpha
 
-        # Get variational expectations.
+        # Get variational expectations derivatives.
         with tf.GradientTape(persistent=True) as g:
             g.watch(post_m)
             g.watch(post_v)
@@ -144,7 +134,7 @@ class CVI(GPModel):
         d_exp_dv = g.gradient(var_exp, post_v)
         del g
 
-        # Take the CVI step
+        # Take the CVI step and transform to be ▽μ[Var_exp]
         self.lambda_1 = (1. - beta) * self.lambda_1 + beta * (d_exp_dm - 2. * (d_exp_dv * post_m))
         self.lambda_2 = (1. - beta) * self.lambda_2 + beta * (-2. * d_exp_dv)
 
@@ -157,7 +147,6 @@ class CVI(GPModel):
            q(F*) = N ( F* | K_{*F} alpha + mean, K_{**} - K_{*f}[K_{ff} +
                                            diag(lambda**-2)]^-1 K_{f*} )
 
-        Note: This model cuurently does not allow full output covariances
         """
         assert full_output_cov == False
         x_data, _y_data = self.data

@@ -284,7 +284,7 @@ class SVGP_CVI(SVGP):
         chol_Kuu = tf.linalg.cholesky(K_uu)
         A = tf.linalg.cholesky_solve(chol_Kuu, K_uf)
 
-        # TODO: Discuss this tensorflow magic
+
         # ▽μ₁[Var_exp] = aₙαₙ
         # ▽μ2[Var_exp] = λₙaₙaₙᵀ
         grads = [
