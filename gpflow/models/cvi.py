@@ -97,6 +97,9 @@ class CVI(GPModel):
 
         return tf.reduce_sum(elbo)
 
+    def neg_elbo(self):
+        return -self.elbo()
+
     def update_variational_parameters(self, beta=0.05) -> tf.Tensor:
         """ Takes natural gradient step in Variational parameters in the local parameters
         λₜ = rₜ▽[Var_exp] + (1-rₜ)λₜ₋₁
