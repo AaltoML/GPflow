@@ -58,6 +58,7 @@ class VGP(GPModel, InternalDataTrainingLossMixin):
         likelihood: Likelihood,
         mean_function: Optional[MeanFunction] = None,
         num_latent_gps: Optional[int] = None,
+        whiten=True,
     ):
         """
         data = (X, Y) contains the input points [N, D] and the observations [N, P]
@@ -71,9 +72,15 @@ class VGP(GPModel, InternalDataTrainingLossMixin):
         X_data, Y_data = self.data
         num_data = X_data.shape[0]
         self.num_data = num_data
+        self.whiten = whiten
 
         self.q_mu = Parameter(np.zeros((num_data, self.num_latent_gps)))
-        q_sqrt = np.array([np.eye(num_data) for _ in range(self.num_latent_gps)])
+        if self.whiten:
+            q_sqrt = np.array([np.eye(num_data) for _ in range(self.num_latent_gps)])
+        else:
+            K = self.kernel(X_data) + tf.eye(self.num_data, dtype=default_float()) * default_jitter()
+            L = tf.linalg.cholesky(K).numpy()
+            q_sqrt = np.array([L for _ in range(self.num_latent_gps)])
         self.q_sqrt = Parameter(q_sqrt, transform=triangular())
 
     def maximum_log_likelihood_objective(self) -> tf.Tensor:
@@ -92,23 +99,26 @@ class VGP(GPModel, InternalDataTrainingLossMixin):
 
         """
         X_data, Y_data = self.data
-        # Get prior KL.
-        KL = gauss_kl(self.q_mu, self.q_sqrt)
-
-        # Get conditionals
         K = self.kernel(X_data) + tf.eye(self.num_data, dtype=default_float()) * default_jitter()
         L = tf.linalg.cholesky(K)
-        fmean = tf.linalg.matmul(L, self.q_mu) + self.mean_function(X_data)  # [NN, ND] -> ND
-        q_sqrt_dnn = tf.linalg.band_part(self.q_sqrt, -1, 0)  # [D, N, N]
-        L_tiled = tf.tile(tf.expand_dims(L, 0), tf.stack([self.num_latent_gps, 1, 1]))
-        LTA = tf.linalg.matmul(L_tiled, q_sqrt_dnn)  # [D, N, N]
-        fvar = tf.reduce_sum(tf.square(LTA), 2)
 
-        fvar = tf.transpose(fvar)
+        # Get conditionals
+        if self.whiten:
+            fmean = tf.linalg.matmul(L, self.q_mu) + self.mean_function(X_data)  # [NN, ND] -> ND
+            q_sqrt_dnn = tf.linalg.band_part(self.q_sqrt, -1, 0)  # [D, N, N]
+            L_tiled = tf.tile(tf.expand_dims(L, 0), tf.stack([self.num_latent_gps, 1, 1]))
+            LTA = tf.linalg.matmul(L_tiled, q_sqrt_dnn)  # [D, N, N]
+            fvar = tf.reduce_sum(tf.square(LTA), 2)
+            fvar = tf.transpose(fvar)
+        else:
+            fmean = self.q_mu
+            fvar = tf.reduce_sum(tf.square(self.q_sqrt), 2)
+            fvar = tf.transpose(fvar)
+        # Get prior KL.
+        KL = gauss_kl(self.q_mu, self.q_sqrt, K_cholesky=None if self.whiten else L)
 
         # Get variational expectations.
         var_exp = self.likelihood.variational_expectations(fmean, fvar, Y_data)
-        #print(KL)
         return tf.reduce_sum(var_exp) - KL
 
     def predict_f(
@@ -116,7 +126,7 @@ class VGP(GPModel, InternalDataTrainingLossMixin):
     ) -> MeanAndVariance:
         X_data, _ = self.data
         mu, var = conditional(
-            Xnew, X_data, self.kernel, self.q_mu, q_sqrt=self.q_sqrt, full_cov=full_cov, white=True,
+            Xnew, X_data, self.kernel, self.q_mu, q_sqrt=self.q_sqrt, full_cov=full_cov, white=self.whiten,
         )
         return mu + self.mean_function(Xnew), var
 

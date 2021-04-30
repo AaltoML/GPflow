@@ -34,7 +34,7 @@ plt.close()
 #plt.show()
 
 # gp
-var_gp = .9
+var_gp = .6
 len_gp = .5
 # likelihood
 var_noise = .1
@@ -45,7 +45,7 @@ m_cvi = CVI(data,
 
 m_vgp = gpflow.models.VGP(data,
     gpflow.kernels.SquaredExponential(lengthscales=len_gp, variance=var_gp),
-    gpflow.likelihoods.Bernoulli())
+    gpflow.likelihoods.Bernoulli(), whiten=True)
 
 print('pre-optim cvi :', m_cvi.elbo())
 print('pre-optim svgp :', m_vgp.elbo())
