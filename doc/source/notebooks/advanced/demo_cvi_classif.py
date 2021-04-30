@@ -43,12 +43,18 @@ m_cvi = CVI(data,
     gpflow.kernels.SquaredExponential(lengthscales=len_gp, variance=var_gp),
     gpflow.likelihoods.Bernoulli())
 
-m_vgp = gpflow.models.VGP(data,
+m_vgp_white = gpflow.models.VGP(data,
     gpflow.kernels.SquaredExponential(lengthscales=len_gp, variance=var_gp),
     gpflow.likelihoods.Bernoulli(), whiten=True)
 
+m_vgp = gpflow.models.VGP(data,
+    gpflow.kernels.SquaredExponential(lengthscales=len_gp, variance=var_gp),
+    gpflow.likelihoods.Bernoulli(), whiten=False)
+
+
 print('pre-optim cvi :', m_cvi.elbo())
-print('pre-optim svgp :', m_vgp.elbo())
+print('pre-optim vgp :', m_vgp.elbo())
+print('pre-optim vgp_white :', m_vgp_white.elbo())
 
 
 #=============================================== run natgrad
@@ -60,32 +66,45 @@ nit = 20
 [m_cvi.update_variational_parameters(beta=lr_natgrad) for _ in range(nit)]
 print('cvi :',  m_cvi.elbo())
 
-# VGP
 natgrad_opt = NaturalGradient(gamma=lr_natgrad)
+# VGP
 variational_params = [(m_vgp.q_mu, m_vgp.q_sqrt)]
 [natgrad_opt.minimize(m_vgp.training_loss, var_list=variational_params) for _ in range(nit)]
-print('svgp :', m_vgp.elbo())
+print('vgp :', m_vgp.elbo())
+
+variational_params_white = [(m_vgp_white.q_mu, m_vgp_white.q_sqrt)]
+[natgrad_opt.minimize(m_vgp_white.training_loss, var_list=variational_params_white) for _ in range(nit)]
+print('vgp_white :', m_vgp_white.elbo())
+
 
 #============================================================
 
+set_trainable(m_vgp_white.kernel.lengthscales, False)
 set_trainable(m_vgp.kernel.lengthscales, False)
 set_trainable(m_cvi.kernel.lengthscales, False)
 
-with tf.GradientTape(watch_accessed_variables=False) as tape:
-    tape.watch(m_vgp.kernel.trainable_variables)
-    loss = m_vgp.elbo()
-de_dhyp_vgp = tape.gradient(loss, m_vgp.kernel.trainable_variables)
 
-with tf.GradientTape() as t2:
-    t2.watch(m_vgp.kernel.trainable_variables)
-    with tf.GradientTape() as t1:
-        t1.watch(m_vgp.kernel.trainable_variables)
-        loss = m_vgp.elbo()
-    dy_dx = t1.gradient(loss, m_vgp.kernel.trainable_variables)
-d2y_dx2 = t2.gradient(dy_dx, m_vgp.kernel.trainable_variables)
+for m, s in zip([m_vgp, m_vgp_white],['', 'white']):
+    with tf.GradientTape(watch_accessed_variables=False) as tape:
+        tape.watch(m.kernel.trainable_variables)
+        loss = m.elbo()
+    de_dhyp_vgp = tape.gradient(loss, m.kernel.trainable_variables)
 
-print('post-optim vgp grad :', de_dhyp_vgp[0].numpy())
-print('post-optim vgp hess :', d2y_dx2[0].numpy())
+    with tf.GradientTape() as t2:
+        t2.watch(m.kernel.trainable_variables)
+        with tf.GradientTape() as t1:
+            t1.watch(m.kernel.trainable_variables)
+            loss = m.elbo()
+        dy_dx = t1.gradient(loss, m.kernel.trainable_variables)
+    d2y_dx2 = t2.gradient(dy_dx, m.kernel.trainable_variables)
+
+    print('post-optim vgp %s grad :'%s, de_dhyp_vgp[0].numpy())
+    print('post-optim vgp %s hess :'%s, d2y_dx2[0].numpy())
+
+
+
+
+
 
 with tf.GradientTape(watch_accessed_variables=False) as tape:
     tape.watch(m_cvi.kernel.trainable_variables)
@@ -108,6 +127,7 @@ print('post-optim cvi hess :', d2y_dx2[0].numpy())
 
 N_grid = 100
 llh_vgp = np.zeros((N_grid,))
+llh_vgp_white = np.zeros((N_grid,))
 llh_cvi = np.zeros((N_grid,))
 vars_gp = np.linspace(.05, 1., N_grid)
 
@@ -119,12 +139,15 @@ for i, v in enumerate(vars_gp):
     m_vgp.kernel.variance.assign(tf.constant(v))
 #    m_vgp.kernel.lengthscales.assign(tf.constant(v))
     llh_vgp[i] = m_vgp.elbo().numpy()
-
+    m_vgp_white.kernel.variance.assign(tf.constant(v))
+#    m_vgp.kernel.lengthscales.assign(tf.constant(v))
+    llh_vgp_white[i] = m_vgp_white.elbo().numpy()
 
 plt.figure()
 
 plt.plot(vars_gp, llh_cvi, label='cvi')
 plt.plot(vars_gp, llh_vgp, label='vgp')
+plt.plot(vars_gp, llh_vgp_white, label='vgp_white')
 plt.vlines(var_gp, ymin=llh_cvi.min(), ymax=llh_cvi.max())
 plt.ylim([llh_cvi.min()-.1 *(llh_cvi.max()-llh_cvi.min()), llh_cvi.max()+.1 *(llh_cvi.max()-llh_cvi.min())])
 plt.legend()
