@@ -17,7 +17,7 @@ tf.random.set_seed(42)
 def func(x):
     return np.sin(x * 3 * 3.14) + 0.3 * np.cos(x * 9 * 3.14) + 0.5 * np.sin(x * 7 * 3.14)
 
-N = 1000  # Number of training observations
+N = 100  # Number of training observations
 X = rng.rand(N, 1) * 2 - 1  # X values
 F = func(X) + 0.2 * rng.randn(N, 1)  # Noisy Y values
 Y = (F>0).astype(float)
@@ -34,7 +34,7 @@ plt.close()
 #plt.show()
 
 # gp
-var_gp = .9
+var_gp = .6
 len_gp = .5
 # likelihood
 var_noise = .1
@@ -45,7 +45,7 @@ m_cvi = CVI(data,
 
 m_vgp = gpflow.models.VGP(data,
     gpflow.kernels.SquaredExponential(lengthscales=len_gp, variance=var_gp),
-    gpflow.likelihoods.Bernoulli())
+    gpflow.likelihoods.Bernoulli(), whiten=True)
 
 print('pre-optim cvi :', m_cvi.elbo())
 print('pre-optim svgp :', m_vgp.elbo())
