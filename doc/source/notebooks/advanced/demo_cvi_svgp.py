@@ -27,7 +27,7 @@ step = 1
 
 # Parameters for optimisation
 adam_lr = 0.01
-natgrad_lr = 0.5
+natgrad_lr = 0.2
 maxiter = 10
 
 
@@ -58,8 +58,9 @@ _ = plt.plot(Xt, Yt, c="k")
 # The main idea behind SVGP is to approximate the true GP posterior with a GP conditioned on a small set of "inducing" values. This smaller set can be thought of as summarizing the larger dataset. For this example, we will select a set of 50 inducing locations that are initialized from the training dataset:
 
 # %%
-M = N  # Number of inducing locations
-Z = X # np.linspace(X.min(), X.max(), M).reshape(-1, 1)
+M = 10#N  # Number of inducing locations
+#Z = np.linspace(X.min(), X.max(), M).reshape(-1, 1)
+Z = X
 
 m_cvi = gpflow.models.SVGP_CVI(
     gpflow.kernels.SquaredExponential(lengthscales=.1),
@@ -67,7 +68,7 @@ m_cvi = gpflow.models.SVGP_CVI(
 
 m_svgp = gpflow.models.SVGP(
     gpflow.kernels.SquaredExponential(lengthscales=.1),
-    gpflow.likelihoods.Gaussian(variance=.2**2), Z, num_data=N, whiten=False)
+    gpflow.likelihoods.Gaussian(variance=.2**2), Z, num_data=N, whiten=True)
 
 
 def plot(m, title=""):
@@ -101,7 +102,7 @@ def plot(m, title=""):
 for m in [m_cvi, m_svgp]:
     gpflow.set_trainable(m.inducing_variable, False)
     gpflow.set_trainable(m.likelihood, False)
-    gpflow.set_trainable(m.kernel, True)
+    gpflow.set_trainable(m.kernel, False)
 
 
 def run_optim_cvi(model, iterations):
@@ -128,11 +129,11 @@ def run_optim_cvi(model, iterations):
         #optimizer.minimize(training_loss, var_list=trainable_variables)
 
     for s in range(iterations):
+        print(s, -training_loss().numpy())
         optimization_step()
         if s % step == 0:
             elbo = -training_loss().numpy()
             logf.append(elbo)
-            print(s, elbo)
     return logf
 
 
@@ -165,11 +166,11 @@ def run_optim_svgp(model, iterations):
         #optimizer.minimize(training_loss, var_list=trainable_variables)
 
     for s in range(iterations):
+        print(s, -training_loss().numpy())
         optimization_step()
         if s % step == 0:
             elbo = -training_loss().numpy()
             logf.append(elbo)
-            print(s, elbo)
     return logf
 
 
@@ -204,6 +205,7 @@ def run_optim_model(m, name):
     plot(m, "Predictions after training")
     plt.savefig('plots/%s_test_%d.svg'%(name,it))
     plt.close()
+    plt.show()
 
 
 def run_optim_models(models, names):
@@ -224,11 +226,22 @@ def run_optim_models(models, names):
     plt.xlabel("iteration")
     _ = plt.ylabel("ELBO")
     plt.legend()
-    plt.savefig('plots/elbos_test.svg')
+    plt.savefig('plots/elbos_test.jpg')
     plt.close()
+
+
+    for m,name in zip(models, names):
+        plot(m,name)
+
+    plt.show()
 
 
 # run_optim_model(m_svgp, 'svgp')
 # run_optim_model(m_cvi, 'cvi')
+
+print(m_cvi.elbo(data))
+print(m_svgp.elbo(data))
+
+
 run_optim_models([m_cvi, m_svgp], ['cvi', 'svgp'])
 
