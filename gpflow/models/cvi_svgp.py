@@ -233,7 +233,7 @@ class SVGP_CVI(SVGP):
 
         if lambda_2_sqrt is None:
             lambda_2_sqrt = [
-                tf.eye(num_inducing, dtype=default_float()) * 1e-10 for _ in range(self.num_latent_gps)
+                -tf.eye(num_inducing, dtype=default_float()) * 1e-10 for _ in range(self.num_latent_gps)
             ]
             lambda_2_sqrt = np.array(lambda_2_sqrt)
             self.lambda_2_sqrt = Parameter(lambda_2_sqrt, transform=triangular())  # [P, M, M]
@@ -253,7 +253,7 @@ class SVGP_CVI(SVGP):
 
     @property
     def lambda_2(self):
-        return tf.matmul(self.lambda_2_sqrt, self.lambda_2_sqrt, transpose_b=True)
+        return -tf.matmul(self.lambda_2_sqrt, self.lambda_2_sqrt, transpose_b=True)
 
     def natgrad_step(self, X, Y, lr=0.1):
         """ Takes natural gradient step in Variational parameters in the local parameters
@@ -267,6 +267,8 @@ class SVGP_CVI(SVGP):
         Updates the params
         """
         mean, var = self.predict_f(X)
+        meanZ, varZ = self.predict_f(self.inducing_variable.Z)
+
         with tf.GradientTape() as g:
             g.watch([mean, var])
             ve = self.likelihood.variational_expectations(mean, var, Y)
@@ -275,29 +277,35 @@ class SVGP_CVI(SVGP):
         lambda_2 = self.lambda_2
         lambda_1 = self.lambda_1
 
-        # chain rule at f
-        grads = gradient_transformation_mean_var_to_expectation([mean, var], grads)
 
         # Compute the projection matrix A from prior information
-        K_uu = Kuu(self.inducing_variable, self.kernel, jitter=default_jitter())  # [P, M, M] or [M, M]
+        # K_uu = Kuu(self.inducing_variable, self.kernel, jitter=default_jitter())
+        K_uu = Kuu(self.inducing_variable, self.kernel)# [P, M, M] or [M, M]
         K_uf = Kuf(self.inducing_variable, self.kernel, X)  # [P, M, M] or [M, M]
         chol_Kuu = tf.linalg.cholesky(K_uu)
-        A = tf.linalg.cholesky_solve(chol_Kuu, K_uf)
-
+        A = tf.transpose(tf.linalg.cholesky_solve(chol_Kuu, K_uf))
+        # A= tf.eye(self.num_inducing,dtype=tf.float64)
 
         # ▽μ₁[Var_exp] = aₙαₙ
         # ▽μ2[Var_exp] = λₙaₙaₙᵀ
+
         grads = [
-            tf.transpose(grads[0]) * A / 2.,
-            tf.reshape(grads[1], [1,1,-1]) * A[None, ...] * A[:, None, ...] * -1.
+            tf.transpose(A) @ grads[0],
+            # tf.reduce_sum(tf.transpose(grads[0]) * A ,axis=-1,keepdims=True),
+            # tf.reduce_sum(grads[1] * A[:, None, :] * A[:, :, None], axis=-1)
+            tf.reduce_sum(grads[1][:, :, None] * (A[:, None, :] * A[:, :, None]), axis=0)
         ]
 
+        # chain rule at f
+        grad_mu = gradient_transformation_mean_var_to_expectation(meanZ, grads)
+
+
         # compute update in natural form
-        lambda_1 = (1-lr) * lambda_1 + lr * tf.reduce_sum(grads[0], axis=-1, keepdims=True)
-        lambda_2 = (1-lr) * lambda_2 + lr * tf.reduce_sum(grads[1], axis=-1)
+        lambda_1 = (1-lr) * lambda_1 + lr * grad_mu[0]
+        lambda_2 = (1-lr) * lambda_2 + lr * grad_mu[1]
 
         # transform and perform update
-        lambda_2_sqrt = tf.linalg.cholesky(lambda_2)
+        lambda_2_sqrt = -tf.linalg.cholesky(-lambda_2)
         self.lambda_1.assign(lambda_1)
         self.lambda_2_sqrt.assign(lambda_2_sqrt)
 
@@ -307,7 +315,9 @@ def posterior_from_sites(K, lambda_1, lambda_2_sqrt):
     Returns the mean and cholesky factor of the density q(u) = p(u)t(u) = 𝓝(u; m, S)
     where p(u) = 𝓝(u; 0, K) and t(u) = exp(uᵀλ₁ - ½ uᵀΛ₂u)
 
-    S = (K⁻¹ + Λ₂)⁻¹ = (K⁻¹ + L₂L₂ᵀ)⁻¹ = K - KL₂W⁻¹L₂ᵀK , W = (I + L₂ᵀKL₂)⁻¹
+    P = -2Λ₂
+
+    S = (K⁻¹ + P)⁻¹ = (K⁻¹ + LLᵀ)⁻¹ = K - KLW⁻¹LᵀK , W = (I + LᵀKL)⁻¹
     m = S λ₁
 
     Input:
@@ -319,23 +329,37 @@ def posterior_from_sites(K, lambda_1, lambda_2_sqrt):
     m: M x P
     chol_S: P x M x M
     """
+
+    L = np.sqrt(2.0)*-lambda_2_sqrt # L - likelihood precisiont square root
+
     m = K.shape[-1]
     I = tf.eye(m, dtype=default_float())
-    L = tf.linalg.cholesky(K)
+    C = tf.linalg.cholesky(K)
 
     # W = I + L_p^T L_t L_t^T L_p, chol(W)
-    LpTLt = tf.matmul(L, lambda_2_sqrt, transpose_a=True)
-    W = I + tf.matmul(LpTLt, LpTLt, transpose_a=True)
+    CtL = tf.matmul(C, L, transpose_a=True)
+    W = I + tf.matmul(CtL, CtL, transpose_a=True)
     chol_W = tf.linalg.cholesky(W)
 
     # S_q = K - K W^-1 K = K - [Lw^{-1} K]^T [Lw^{-1} K]
-    LtTK = tf.matmul(lambda_2_sqrt, K, transpose_a=True)
-    iLwLtTK = tf.linalg.triangular_solve(chol_W, LtTK, lower=True, adjoint=False)
-    S_q = K - tf.matmul(iLwLtTK, iLwLtTK, transpose_a=True)
+    LtK = tf.matmul(L, K, transpose_a=True)
+    iwLtK = tf.linalg.triangular_solve(chol_W, LtK, lower=True, adjoint=False)
+    # S_q = K - tf.matmul(LtTK, iLwLtTK, transpose_a=True)
+    S_q = K - tf.matmul(iwLtK , iwLtK , transpose_a=True)
 
     chol_S_q = tf.linalg.cholesky(S_q + I * 1e-8)
     m_q = tf.einsum('lmn,nl->ml', S_q, lambda_1)
 
+    # Test
+    lambda_2 = -lambda_2_sqrt @ tf.transpose(lambda_2_sqrt)
+    S_q_test = tf.linalg.inv(tf.linalg.inv(K) + -2*lambda_2[:,:,0])
+    chol_S_q_test = tf.linalg.cholesky(S_q_test)
+    m_q_test =  S_q_test @ lambda_1
+
+    #print(m_q - mq_test)
+    #print(S_q[0] - S_q_test)
+
+    # return m_q_test, chol_S_q_test[None]
     return m_q, chol_S_q
 
 
@@ -349,4 +373,4 @@ def gradient_transformation_mean_var_to_expectation(inputs, grads):
     Output:
     ▽μ
     """
-    return grads[0] - 2.0 * grads[1] * inputs[0], grads[1]
+    return grads[0] - 2.0 * grads[1] @ inputs, grads[1]
