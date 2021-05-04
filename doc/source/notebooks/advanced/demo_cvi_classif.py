@@ -103,9 +103,6 @@ for m, s in zip([m_vgp, m_vgp_white],['', 'white']):
 
 
 
-
-
-
 with tf.GradientTape(watch_accessed_variables=False) as tape:
     tape.watch(m_cvi.kernel.trainable_variables)
     loss = m_cvi.elbo()
@@ -156,4 +153,80 @@ plt.savefig('llh_classif.png')
 plt.close()
 
 
+#=============================================== run SVGP
 
+M = 3  # Number of inducing locations
+Z = np.linspace(X.min(), X.max(), M).reshape(-1, 1)
+
+m_scvi = gpflow.models.SVGP_CVI(
+    gpflow.kernels.SquaredExponential(lengthscales=len_gp, variance=var_gp),
+    gpflow.likelihoods.Bernoulli(), Z, num_data=N)
+
+m_svgp_white = gpflow.models.SVGP(
+    gpflow.kernels.SquaredExponential(lengthscales=len_gp, variance=var_gp),
+    gpflow.likelihoods.Bernoulli(), Z, num_data=N, whiten=True)
+
+m_svgp = gpflow.models.SVGP(
+    gpflow.kernels.SquaredExponential(lengthscales=len_gp, variance=var_gp),
+    gpflow.likelihoods.Bernoulli(), Z, num_data=N, whiten=False)
+
+set_trainable(m_svgp_white.kernel.lengthscales, False)
+set_trainable(m_svgp.kernel.lengthscales, False)
+set_trainable(m_cvi.kernel.lengthscales, False)
+
+
+#=============================================== run natgrad
+
+lr_natgrad = .5
+nit = 20
+
+data = (X,Y)
+
+# CVI
+[m_scvi.natgrad_step(X,Y,lr_natgrad) for _ in range(nit)]
+print('cvi :',  m_scvi.elbo(data))
+
+natgrad_opt = NaturalGradient(gamma=lr_natgrad)
+training_loss = m_svgp.training_loss_closure(data)
+training_loss_white = m_svgp_white.training_loss_closure(data)
+
+# SVGP
+variational_params = [(m_svgp.q_mu, m_svgp.q_sqrt)]
+[natgrad_opt.minimize(training_loss, var_list=variational_params) for _ in range(nit)]
+print('vgp :', -training_loss().numpy())
+
+variational_params_white = [(m_svgp_white.q_mu, m_svgp_white.q_sqrt)]
+[natgrad_opt.minimize(training_loss_white, var_list=variational_params_white) for _ in range(nit)]
+print('vgp_white :', -training_loss_white().numpy())
+
+#========================================
+
+N_grid = 100
+llh_svgp = np.zeros((N_grid,))
+llh_svgp_white = np.zeros((N_grid,))
+llh_scvi = np.zeros((N_grid,))
+vars_gp = np.linspace(.05, 1., N_grid)
+
+for i, v in enumerate(vars_gp):
+
+    m_scvi.kernel.variance.assign(tf.constant(v))
+#    m_cvi.kernel.lengthscales.assign(tf.constant(v))
+    llh_scvi[i] = m_scvi.elbo(data).numpy()
+    m_svgp.kernel.variance.assign(tf.constant(v))
+#    m_vgp.kernel.lengthscales.assign(tf.constant(v))
+    llh_svgp[i] = m_svgp.elbo(data).numpy()
+    m_svgp_white.kernel.variance.assign(tf.constant(v))
+#    m_vgp.kernel.lengthscales.assign(tf.constant(v))
+    llh_svgp_white[i] = m_svgp_white.elbo(data).numpy()
+
+plt.figure()
+
+plt.plot(vars_gp, llh_scvi, label='cvi')
+plt.plot(vars_gp, llh_svgp, label='vgp')
+plt.plot(vars_gp, llh_svgp_white, label='vgp_white')
+plt.vlines(var_gp, ymin=llh_scvi.min(), ymax=llh_scvi.max())
+plt.ylim([llh_scvi.min()-.1 *(llh_scvi.max()-llh_scvi.min()), llh_scvi.max()+.1 *(llh_scvi.max()-llh_scvi.min())])
+plt.legend()
+plt.title('classification')
+plt.savefig('llh_classif_s.png')
+plt.close()
